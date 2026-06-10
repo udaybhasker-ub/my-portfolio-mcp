@@ -1,7 +1,34 @@
 import Database from 'better-sqlite3';
 import { config_ } from '../config.js';
 
-export function initializeSchema(db: Database.Database): void {
+const POSITIONS_TABLE = `
+  CREATE TABLE IF NOT EXISTS positions (
+    ticker TEXT PRIMARY KEY,
+    shares REAL NOT NULL,
+    avgCostPerShare REAL NOT NULL,
+    totalCostBasis REAL NOT NULL,
+    realizedGain REAL NOT NULL DEFAULT 0,
+    totalDividends REAL NOT NULL DEFAULT 0,
+    firstPurchaseDate TEXT,
+    lastTransactionDate TEXT,
+    status TEXT NOT NULL CHECK(status IN ('OPEN', 'CLOSED')),
+    comments TEXT,
+    createdAt TEXT NOT NULL,
+    updatedAt TEXT NOT NULL
+  )
+`;
+
+const POSITION_COMMENTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS positionComments (
+    id TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    text TEXT NOT NULL,
+    createdAt TEXT NOT NULL,
+    FOREIGN KEY(ticker) REFERENCES positions(ticker) ON DELETE CASCADE
+  )
+`;
+
+export function initializeSchema(db: Database.Database): { needsPositionBackfill: boolean } {
   db.exec(`
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
@@ -14,32 +41,6 @@ export function initializeSchema(db: Database.Database): void {
       comments TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
-    )
-  `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS positions (
-      id TEXT PRIMARY KEY,
-      ticker TEXT NOT NULL,
-      shares REAL NOT NULL,
-      avgCostPerShare REAL NOT NULL,
-      totalCostBasis REAL NOT NULL,
-      purchaseDate TEXT NOT NULL,
-      closeDate TEXT,
-      status TEXT NOT NULL CHECK(status IN ('OPEN', 'CLOSED')),
-      comments TEXT,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    )
-  `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS positionComments (
-      id TEXT PRIMARY KEY,
-      positionId TEXT NOT NULL,
-      text TEXT NOT NULL,
-      createdAt TEXT NOT NULL,
-      FOREIGN KEY(positionId) REFERENCES positions(id) ON DELETE CASCADE
     )
   `);
 
@@ -88,14 +89,37 @@ export function initializeSchema(db: Database.Database): void {
 
   const versionStmt = db.prepare('SELECT version FROM schemaVersion ORDER BY version DESC LIMIT 1');
   const result = versionStmt.get() as { version: number } | undefined;
-  const currentVersion = result?.version || 0;
+  let currentVersion = result?.version || 0;
 
   if (currentVersion === 0) {
     db.prepare('INSERT INTO schemaVersion (version, appliedAt) VALUES (?, ?)').run(
       1,
       new Date().toISOString()
     );
+    currentVersion = 1;
   }
+
+  let needsPositionBackfill = false;
+
+  if (currentVersion < 2) {
+    // positions/positionComments are moving from per-lot (id-keyed) to a
+    // ticker-keyed materialized view rebuilt from transactions. Both tables
+    // are empty at this point, so dropping and recreating is non-destructive.
+    db.exec('DROP TABLE IF EXISTS positionComments');
+    db.exec('DROP TABLE IF EXISTS positions');
+    db.exec(POSITIONS_TABLE);
+    db.exec(POSITION_COMMENTS_TABLE);
+    db.prepare('INSERT INTO schemaVersion (version, appliedAt) VALUES (?, ?)').run(
+      2,
+      new Date().toISOString()
+    );
+    needsPositionBackfill = true;
+  } else {
+    db.exec(POSITIONS_TABLE);
+    db.exec(POSITION_COMMENTS_TABLE);
+  }
+
+  return { needsPositionBackfill };
 }
 
 export function getDatabase(): Database.Database {
