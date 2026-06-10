@@ -14,6 +14,8 @@ import { positionTools, handlePositionTool } from './tools/positions.js';
 import { alertTools, handleAlertTool } from './tools/alerts.js';
 import { dailyPositionTools, handleDailyPositionTool } from './tools/daily-positions.js';
 import { utilityTools, handleUtilityTool } from './tools/utils.js';
+import { oauthRouter } from './oauth/routes.js';
+import { isValidAccessToken } from './oauth/store.js';
 
 const allTools = [
   ...transactionTools,
@@ -115,7 +117,12 @@ function requireBearerAuth(
   const authHeader = req.headers.authorization ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : '';
 
-  if (!token || token !== config_.mcpAuthToken) {
+  const isStaticToken = !!token && token === config_.mcpAuthToken;
+  const isOAuthToken = !!token && isValidAccessToken(token);
+
+  if (!isStaticToken && !isOAuthToken) {
+    const issuer = `${req.protocol}://${req.get('host')}`;
+    res.set('WWW-Authenticate', `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource"`);
     res.status(401).json({
       jsonrpc: '2.0',
       error: { code: -32001, message: 'Unauthorized' },
@@ -142,11 +149,15 @@ async function startHttpServer(): Promise<void> {
   }
 
   const app = express();
+  app.set('trust proxy', true);
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+
+  app.use(oauthRouter);
 
   app.post('/mcp', requireBearerAuth, async (req, res) => {
     const server = createMcpServer();
