@@ -4,6 +4,8 @@ interface Config {
   databasePath: string;
   databaseSyncIntervalMinutes: number;
   backupTimeUtc: string;
+  port: number;
+  mcpAuthToken: string;
 }
 
 function loadConfig(): Config {
@@ -15,6 +17,8 @@ function loadConfig(): Config {
     10
   );
   const backupTimeUtc = process.env.BACKUP_TIME_UTC || '23:00';
+  const port = parseInt(process.env.PORT || '8000', 10);
+  const mcpAuthToken = process.env.MCP_AUTH_TOKEN || '';
 
   return {
     nodeEnv,
@@ -22,6 +26,8 @@ function loadConfig(): Config {
     databasePath,
     databaseSyncIntervalMinutes,
     backupTimeUtc,
+    port,
+    mcpAuthToken,
   };
 }
 
