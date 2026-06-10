@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+.DS_Store
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.history
+
+# OAuth and token secrets - NEVER commit these
+oauth-credentials.json
+tokens.json
