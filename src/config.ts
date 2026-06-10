@@ -6,6 +6,7 @@ interface Config {
   backupTimeUtc: string;
   port: number;
   mcpAuthToken: string;
+  finmcpUrl: string;
 }
 
 function loadConfig(): Config {
@@ -19,6 +20,7 @@ function loadConfig(): Config {
   const backupTimeUtc = process.env.BACKUP_TIME_UTC || '23:00';
   const port = parseInt(process.env.PORT || '8000', 10);
   const mcpAuthToken = process.env.MCP_AUTH_TOKEN || '';
+  const finmcpUrl = process.env.FINMCP_URL || '';
 
   return {
     nodeEnv,
@@ -28,6 +30,7 @@ function loadConfig(): Config {
     backupTimeUtc,
     port,
     mcpAuthToken,
+    finmcpUrl,
   };
 }
 

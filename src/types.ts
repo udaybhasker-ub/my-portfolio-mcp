@@ -12,22 +12,30 @@ export interface Transaction {
 }
 
 export interface Position {
-  id: string;
   ticker: string;
   shares: number;
   avgCostPerShare: number;
   totalCostBasis: number;
-  purchaseDate: string;
-  closeDate: string | null;
+  realizedGain: number;
+  totalDividends: number;
+  firstPurchaseDate: string | null;
+  lastTransactionDate: string | null;
   status: 'OPEN' | 'CLOSED';
   comments: string;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface PositionWithMarketData extends Position {
+  currentPrice: number | null;
+  marketValue: number | null;
+  unrealizedGain: number | null;
+  unrealizedGainPct: number | null;
+}
+
 export interface PositionComment {
   id: string;
-  positionId: string;
+  ticker: string;
   text: string;
   createdAt: string;
 }
@@ -49,6 +57,13 @@ export interface AlertComment {
   createdAt: string;
 }
 
+export interface AlertEvaluation {
+  alert: Alert;
+  currentPrice: number | null;
+  triggered: boolean;
+  details: string;
+}
+
 export interface DailyPosition {
   id: string;
   date: string;
@@ -60,10 +75,17 @@ export interface DailyPosition {
   createdAt: string;
 }
 
-export interface PositionSummary {
-  totalPositions: number;
+export interface PortfolioStats {
   openPositions: number;
   closedPositions: number;
   totalCostBasis: number;
-  tickers: string[];
+  totalMarketValue: number;
+  totalUnrealizedGain: number;
+  totalRealizedGain: number;
+  totalDividends: number;
+  totalReturn: number;
+  returnPct: number;
+  transactionCount: number;
+  alertCount: number;
+  timestamp: string;
 }

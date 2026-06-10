@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { initializeSchema, getDatabase } from './schema.js';
+import { computePosition } from '../positions/engine.js';
 import * as Types from '../types.js';
 
 let dbInstance: Database.Database | null = null;
@@ -8,7 +9,10 @@ let dbInstance: Database.Database | null = null;
 export function initializeDatabase(): Database.Database {
   if (!dbInstance) {
     dbInstance = getDatabase();
-    initializeSchema(dbInstance);
+    const { needsPositionBackfill } = initializeSchema(dbInstance);
+    if (needsPositionBackfill) {
+      backfillPositions();
+    }
   }
   return dbInstance;
 }
@@ -18,6 +22,14 @@ export function getDb(): Database.Database {
     throw new Error('Database not initialized');
   }
   return dbInstance;
+}
+
+function backfillPositions(): void {
+  const db = getDb();
+  const tickers = db.prepare('SELECT DISTINCT ticker FROM transactions').all() as { ticker: string }[];
+  for (const { ticker } of tickers) {
+    rebuildPosition(ticker);
+  }
 }
 
 export function addTransaction(
@@ -39,6 +51,8 @@ export function addTransaction(
   `);
 
   stmt.run(id, ticker, type, shares, pricePerShare, totalCost, date, comments, now, now);
+
+  rebuildPosition(ticker);
 
   return {
     id,
@@ -122,46 +136,25 @@ export function updateTransaction(
     id
   );
 
+  rebuildPosition(updated.ticker);
+
   return updated;
 }
 
-export function deleteTransaction(id: string): void {
+export function deleteTransaction(id: string): { ticker: string } | null {
   const db = getDb();
-  const stmt = db.prepare('DELETE FROM transactions WHERE id = ?');
-  stmt.run(id);
-}
+  const existing = db.prepare('SELECT ticker FROM transactions WHERE id = ?').get(id) as
+    | { ticker: string }
+    | undefined;
 
-export function addPosition(
-  ticker: string,
-  shares: number,
-  avgCostPerShare: number,
-  purchaseDate: string
-): Types.Position {
-  const db = getDb();
-  const id = uuidv4();
-  const now = new Date().toISOString();
-  const totalCostBasis = shares * avgCostPerShare;
+  db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
 
-  const stmt = db.prepare(`
-    INSERT INTO positions (id, ticker, shares, avgCostPerShare, totalCostBasis, purchaseDate, closeDate, status, comments, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  if (!existing) {
+    return null;
+  }
 
-  stmt.run(id, ticker, shares, avgCostPerShare, totalCostBasis, purchaseDate, null, 'OPEN', '', now, now);
-
-  return {
-    id,
-    ticker,
-    shares,
-    avgCostPerShare,
-    totalCostBasis,
-    purchaseDate,
-    closeDate: null,
-    status: 'OPEN',
-    comments: '',
-    createdAt: now,
-    updatedAt: now,
-  };
+  rebuildPosition(existing.ticker);
+  return { ticker: existing.ticker };
 }
 
 export function listPositions(status?: 'OPEN' | 'CLOSED'): Types.Position[] {
@@ -179,94 +172,61 @@ export function listPositions(status?: 'OPEN' | 'CLOSED'): Types.Position[] {
   return stmt.all(...params) as Types.Position[];
 }
 
-export function updatePosition(
-  id: string,
-  shares?: number,
-  avgCostPerShare?: number
-): Types.Position {
+export function rebuildPosition(ticker: string): Types.Position | null {
   const db = getDb();
-  const existing = db.prepare('SELECT * FROM positions WHERE id = ?').get(id) as
-    | Types.Position
-    | undefined;
+  const txs = listTransactions(ticker);
+  const computed = computePosition(ticker, txs);
 
-  if (!existing) {
-    throw new Error(`Position ${id} not found`);
+  if (!computed) {
+    db.prepare('DELETE FROM positions WHERE ticker = ?').run(ticker);
+    return null;
   }
 
-  const newShares = shares ?? existing.shares;
-  const newAvgCost = avgCostPerShare ?? existing.avgCostPerShare;
-  const newTotalCostBasis = newShares * newAvgCost;
+  const existing = db.prepare('SELECT comments, createdAt FROM positions WHERE ticker = ?').get(ticker) as
+    | { comments: string; createdAt: string }
+    | undefined;
   const now = new Date().toISOString();
 
   const stmt = db.prepare(`
-    UPDATE positions
-    SET shares = ?, avgCostPerShare = ?, totalCostBasis = ?, updatedAt = ?
-    WHERE id = ?
+    INSERT INTO positions (ticker, shares, avgCostPerShare, totalCostBasis, realizedGain, totalDividends, firstPurchaseDate, lastTransactionDate, status, comments, createdAt, updatedAt)
+    VALUES (@ticker, @shares, @avgCostPerShare, @totalCostBasis, @realizedGain, @totalDividends, @firstPurchaseDate, @lastTransactionDate, @status, @comments, @createdAt, @updatedAt)
+    ON CONFLICT(ticker) DO UPDATE SET
+      shares = excluded.shares,
+      avgCostPerShare = excluded.avgCostPerShare,
+      totalCostBasis = excluded.totalCostBasis,
+      realizedGain = excluded.realizedGain,
+      totalDividends = excluded.totalDividends,
+      firstPurchaseDate = excluded.firstPurchaseDate,
+      lastTransactionDate = excluded.lastTransactionDate,
+      status = excluded.status,
+      updatedAt = excluded.updatedAt
   `);
 
-  stmt.run(newShares, newAvgCost, newTotalCostBasis, now, id);
-
-  return {
-    ...existing,
-    shares: newShares,
-    avgCostPerShare: newAvgCost,
-    totalCostBasis: newTotalCostBasis,
+  stmt.run({
+    ...computed,
+    comments: existing?.comments ?? '',
+    createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-  };
+  });
+
+  return db.prepare('SELECT * FROM positions WHERE ticker = ?').get(ticker) as Types.Position;
 }
 
-export function closePosition(id: string, closeDate: string): Types.Position {
-  const db = getDb();
-  const existing = db.prepare('SELECT * FROM positions WHERE id = ?').get(id) as
-    | Types.Position
-    | undefined;
-
-  if (!existing) {
-    throw new Error(`Position ${id} not found`);
-  }
-
-  const now = new Date().toISOString();
-  const stmt = db.prepare(`
-    UPDATE positions
-    SET status = 'CLOSED', closeDate = ?, updatedAt = ?
-    WHERE id = ?
-  `);
-
-  stmt.run(closeDate, now, id);
-
-  return { ...existing, status: 'CLOSED', closeDate, updatedAt: now };
-}
-
-export function getPositionSummary(): Types.PositionSummary {
-  const db = getDb();
-  const positions = listPositions();
-
-  const summary: Types.PositionSummary = {
-    totalPositions: positions.length,
-    openPositions: positions.filter((p) => p.status === 'OPEN').length,
-    closedPositions: positions.filter((p) => p.status === 'CLOSED').length,
-    totalCostBasis: positions.reduce((sum, p) => sum + p.totalCostBasis, 0),
-    tickers: [...new Set(positions.map((p) => p.ticker))],
-  };
-
-  return summary;
-}
-
-export function addPositionComment(positionId: string, text: string): Types.PositionComment {
+export function addPositionComment(ticker: string, text: string): Types.PositionComment {
   const db = getDb();
   const id = uuidv4();
   const now = new Date().toISOString();
 
-  const stmt = db.prepare('INSERT INTO positionComments (id, positionId, text, createdAt) VALUES (?, ?, ?, ?)');
-  stmt.run(id, positionId, text, now);
+  const stmt = db.prepare('INSERT INTO positionComments (id, ticker, text, createdAt) VALUES (?, ?, ?, ?)');
+  stmt.run(id, ticker, text, now);
 
-  return { id, positionId, text, createdAt: now };
+  return { id, ticker, text, createdAt: now };
 }
 
-export function listPositionComments(positionId: string): Types.PositionComment[] {
+export function listPositionComments(ticker: string): Types.PositionComment[] {
   const db = getDb();
-  const stmt = db.prepare('SELECT * FROM positionComments WHERE positionId = ? ORDER BY createdAt ASC');
-  return stmt.all(positionId) as Types.PositionComment[];
+  const stmt = db.prepare('SELECT * FROM positionComments WHERE ticker = ? ORDER BY createdAt ASC');
+  return stmt.all(ticker) as Types.PositionComment[];
 }
 
 export function addAlert(

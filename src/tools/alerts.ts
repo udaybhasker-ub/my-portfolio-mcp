@@ -1,4 +1,5 @@
 import * as Client from '../db/client.js';
+import { evaluateAlerts } from '../alerts/engine.js';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 export const alertTools: Tool[] = [
@@ -115,6 +116,20 @@ export const alertTools: Tool[] = [
       required: ['alertId'],
     },
   },
+  {
+    name: 'evaluate_alerts',
+    description:
+      'Evaluate alerts against live prices from FinMCP and report which are currently triggered, optionally filtered by ticker',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticker: {
+          type: 'string',
+          description: 'Optional: filter by ticker symbol',
+        },
+      },
+    },
+  },
 ];
 
 export async function handleAlertTool(
@@ -150,6 +165,9 @@ export async function handleAlertTool(
 
     case 'list_alert_comments':
       return Client.listAlertComments(params.alertId as string);
+
+    case 'evaluate_alerts':
+      return evaluateAlerts(params.ticker as string | undefined);
 
     default:
       throw new Error(`Unknown alert tool: ${name}`);

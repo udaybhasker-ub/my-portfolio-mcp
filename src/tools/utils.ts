@@ -1,5 +1,5 @@
-import * as Client from '../db/client.js';
 import { uploadDatabaseToDrive } from '../google-drive/sync.js';
+import { getPortfolioStats } from '../positions/stats.js';
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 export const utilityTools: Tool[] = [
@@ -13,7 +13,7 @@ export const utilityTools: Tool[] = [
   },
   {
     name: 'get_portfolio_stats',
-    description: 'Get portfolio statistics and summary',
+    description: 'Get portfolio statistics and summary, including unrealized gains using live prices',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -34,18 +34,8 @@ export async function handleUtilityTool(
         return { success: false, error: (error as Error).message };
       }
 
-    case 'get_portfolio_stats': {
-      const summary = Client.getPositionSummary();
-      const transactions = Client.listTransactions();
-      const alerts = Client.listAlerts();
-
-      return {
-        positions: summary,
-        transactionCount: transactions.length,
-        alertCount: alerts.length,
-        timestamp: new Date().toISOString(),
-      };
-    }
+    case 'get_portfolio_stats':
+      return getPortfolioStats();
 
     default:
       throw new Error(`Unknown utility tool: ${name}`);
