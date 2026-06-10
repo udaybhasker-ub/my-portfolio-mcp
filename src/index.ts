@@ -1,7 +1,9 @@
 import 'dotenv/config';
+import express from 'express';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { z } from 'zod';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import * as DatabaseClient from './db/client.js';
 import { config_ } from './config.js';
@@ -21,134 +23,168 @@ const allTools = [
   ...utilityTools,
 ];
 
-const ListToolsRequestSchema = z.object({
-  method: z.literal('tools/list'),
-  params: z.object({}).optional(),
-});
+async function triggerSync(): Promise<void> {
+  try {
+    await uploadDatabaseToDrive();
+  } catch (error) {
+    console.error('Failed to sync to Drive:', error);
+  }
+}
 
-const CallToolRequestSchema = z.object({
-  method: z.literal('tools/call'),
-  params: z.object({
-    name: z.string(),
-    arguments: z.record(z.unknown()),
-  }),
-});
-
-class PortfolioServer {
-  private server: Server;
-  private syncInterval: NodeJS.Timeout | null = null;
-
-  constructor() {
-    this.server = new Server(
-      {
-        name: 'my-portfolio-mcp',
-        version: '0.1.0',
+function createMcpServer(): Server {
+  const server = new Server(
+    {
+      name: 'my-portfolio-mcp',
+      version: '0.1.0',
+    },
+    {
+      capabilities: {
+        tools: {},
       },
-      {
-        capabilities: {
-          tools: {},
-        },
+    }
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: allTools,
+  }));
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: toolParams } = request.params;
+    const params = toolParams ?? {};
+
+    try {
+      let result: unknown;
+
+      if (transactionTools.some((t) => t.name === name)) {
+        result = await handleTransactionTool(name, params);
+      } else if (positionTools.some((t) => t.name === name)) {
+        result = await handlePositionTool(name, params);
+      } else if (alertTools.some((t) => t.name === name)) {
+        result = await handleAlertTool(name, params);
+      } else if (dailyPositionTools.some((t) => t.name === name)) {
+        result = await handleDailyPositionTool(name, params);
+      } else if (utilityTools.some((t) => t.name === name)) {
+        result = await handleUtilityTool(name, params);
+      } else {
+        throw new Error(`Unknown tool: ${name}`);
       }
-    );
 
-    this.setupHandlers();
-  }
+      await triggerSync();
 
-  private setupHandlers(): void {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: allTools,
-    }));
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: toolParams } = request.params;
+  return server;
+}
 
-      try {
-        let result: unknown;
+function startSyncInterval(): void {
+  const intervalMs = config_.databaseSyncIntervalMinutes * 60 * 1000;
 
-        if (transactionTools.some((t) => t.name === name)) {
-          result = await handleTransactionTool(name, toolParams);
-        } else if (positionTools.some((t) => t.name === name)) {
-          result = await handlePositionTool(name, toolParams);
-        } else if (alertTools.some((t) => t.name === name)) {
-          result = await handleAlertTool(name, toolParams);
-        } else if (dailyPositionTools.some((t) => t.name === name)) {
-          result = await handleDailyPositionTool(name, toolParams);
-        } else if (utilityTools.some((t) => t.name === name)) {
-          result = await handleUtilityTool(name, toolParams);
-        } else {
-          throw new Error(`Unknown tool: ${name}`);
-        }
-
-        await this.triggerSync();
-
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify(result, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    });
-  }
-
-  private async triggerSync(): Promise<void> {
+  setInterval(async () => {
     try {
       await uploadDatabaseToDrive();
     } catch (error) {
-      console.error('Failed to sync to Drive:', error);
+      console.error('Interval sync failed:', error);
     }
+  }, intervalMs);
+}
+
+function requireBearerAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  const authHeader = req.headers.authorization ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : '';
+
+  if (!token || token !== config_.mcpAuthToken) {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'Unauthorized' },
+      id: null,
+    });
+    return;
   }
 
-  private startSyncInterval(): void {
-    const intervalMs = config_.databaseSyncIntervalMinutes * 60 * 1000;
+  next();
+}
 
-    this.syncInterval = setInterval(async () => {
-      try {
-        await uploadDatabaseToDrive();
-      } catch (error) {
-        console.error('Interval sync failed:', error);
-      }
-    }, intervalMs);
+function methodNotAllowed(_req: express.Request, res: express.Response): void {
+  res.status(405).json({
+    jsonrpc: '2.0',
+    error: { code: -32000, message: 'Method not allowed.' },
+    id: null,
+  });
+}
+
+async function startHttpServer(): Promise<void> {
+  if (!config_.mcpAuthToken) {
+    console.warn('⚠️  MCP_AUTH_TOKEN not set - Streamable HTTP transport disabled');
+    return;
   }
 
-  async initialize(): Promise<void> {
-    try {
-      DatabaseClient.initializeDatabase();
-      await ensureDatabaseSynced();
-      await scheduleBackups();
-      this.startSyncInterval();
+  const app = express();
+  app.use(express.json());
 
-      console.log('Portfolio MCP server initialized');
-    } catch (error) {
-      console.error('Failed to initialize server:', error);
-      throw error;
-    }
-  }
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
 
-  async run(): Promise<void> {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.log('Portfolio MCP server running on stdio transport');
-  }
+  app.post('/mcp', requireBearerAuth, async (req, res) => {
+    const server = createMcpServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+
+    res.on('close', () => {
+      void transport.close();
+      void server.close();
+    });
+
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  });
+
+  app.get('/mcp', requireBearerAuth, methodNotAllowed);
+  app.delete('/mcp', requireBearerAuth, methodNotAllowed);
+
+  app.listen(config_.port, () => {
+    console.log(
+      `Portfolio MCP server listening on HTTP port ${config_.port} (Streamable HTTP, bearer auth required)`
+    );
+  });
 }
 
 async function main(): Promise<void> {
   try {
-    const server = new PortfolioServer();
-    await server.initialize();
-    await server.run();
+    DatabaseClient.initializeDatabase();
+    await ensureDatabaseSynced();
+    await scheduleBackups();
+    startSyncInterval();
+
+    console.log('Portfolio MCP server initialized');
+
+    const stdioServer = createMcpServer();
+    await stdioServer.connect(new StdioServerTransport());
+    console.log('Portfolio MCP server running on stdio transport');
+
+    await startHttpServer();
   } catch (error) {
     console.error('Fatal error:', error);
     process.exit(1);

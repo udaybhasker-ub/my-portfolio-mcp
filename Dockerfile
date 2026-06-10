@@ -22,5 +22,8 @@ COPY --from=builder /app/dist ./dist
 # Do NOT copy them into the image
 
 ENV NODE_ENV=production
+ENV PORT=8000
+
+EXPOSE 8000
 
 CMD ["node", "dist/index.js"]
