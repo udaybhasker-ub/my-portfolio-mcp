@@ -6,7 +6,7 @@ function enrichPosition(
   position: Types.Position,
   currentPrice: number | undefined
 ): Types.PositionWithMarketData {
-  const price = currentPrice ?? null;
+  const price = position.ticker === 'CASH' ? 1 : currentPrice ?? null;
   const marketValue = price !== null ? price * position.shares : null;
   const unrealizedGain = marketValue !== null ? marketValue - position.totalCostBasis : null;
   const unrealizedGainPct =
@@ -27,7 +27,9 @@ export async function getPositionsWithMarketData(
   status?: 'OPEN' | 'CLOSED'
 ): Promise<Types.PositionWithMarketData[]> {
   const positions = Client.listPositions(status);
-  const openTickers = positions.filter((p) => p.status === 'OPEN').map((p) => p.ticker);
+  const openTickers = positions
+    .filter((p) => p.status === 'OPEN' && p.ticker !== 'CASH')
+    .map((p) => p.ticker);
   const prices = await getQuotes(openTickers);
 
   return positions.map((p) => enrichPosition(p, prices[p.ticker]));

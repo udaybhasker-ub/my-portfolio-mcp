@@ -26,6 +26,10 @@ export function computePosition(
     return null;
   }
 
+  if (ticker === 'CASH') {
+    return computeCashPosition(ticker, txs);
+  }
+
   let shares = 0;
   let totalCostBasis = 0;
   let realizedGain = 0;
@@ -36,11 +40,11 @@ export function computePosition(
   for (const tx of txs) {
     lastTransactionDate = tx.date;
 
-    if (tx.type === 'BUY') {
+    if (tx.type === 'BUY' || tx.type === 'DEPOSIT') {
       if (firstPurchaseDate === null) firstPurchaseDate = tx.date;
       shares += tx.shares;
       totalCostBasis += tx.totalCost;
-    } else if (tx.type === 'SELL') {
+    } else if (tx.type === 'SELL' || tx.type === 'WITHDRAWAL') {
       const avgCost = shares > 0 ? totalCostBasis / shares : 0;
       const costOfSold = avgCost * tx.shares;
       realizedGain += tx.totalCost - costOfSold;
@@ -69,5 +73,37 @@ export function computePosition(
     firstPurchaseDate,
     lastTransactionDate,
     status,
+  };
+}
+
+// The CASH position is a running balance, not a share lot: it can go negative
+// (e.g. a stock buy recorded before its funding deposit) and has no cost-basis
+// or realized-gain concept.
+function computeCashPosition(ticker: string, txs: Types.Transaction[]): ComputedPosition {
+  let balance = 0;
+  let firstPurchaseDate: string | null = null;
+  let lastTransactionDate: string | null = null;
+
+  for (const tx of txs) {
+    lastTransactionDate = tx.date;
+
+    if (tx.type === 'DEPOSIT' || tx.type === 'BUY') {
+      if (firstPurchaseDate === null) firstPurchaseDate = tx.date;
+      balance += tx.totalCost;
+    } else if (tx.type === 'WITHDRAWAL' || tx.type === 'SELL') {
+      balance -= tx.totalCost;
+    }
+  }
+
+  return {
+    ticker,
+    shares: balance,
+    avgCostPerShare: 1,
+    totalCostBasis: balance,
+    realizedGain: 0,
+    totalDividends: 0,
+    firstPurchaseDate,
+    lastTransactionDate,
+    status: 'OPEN',
   };
 }

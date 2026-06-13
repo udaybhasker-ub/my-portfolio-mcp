@@ -26,26 +26,32 @@ export const transactionTools: Tool[] = [
   },
   {
     name: 'add_transaction',
-    description: 'Create a new transaction',
+    description:
+      'Create a new transaction. BUY/SELL on a non-CASH ticker automatically creates a linked CASH ' +
+      'WITHDRAWAL/DEPOSIT transaction for the same amount, so the CASH position tracks your brokerage ' +
+      'cash balance. To record funding the brokerage account from your bank, add a transaction with ' +
+      'ticker "CASH" and type "DEPOSIT" (use type "WITHDRAWAL" for transfers out). For CASH ' +
+      'DEPOSIT/WITHDRAWAL, shares represents the dollar amount and pricePerShare is fixed at 1.',
     inputSchema: {
       type: 'object',
       properties: {
         ticker: {
           type: 'string',
-          description: 'Stock ticker symbol (e.g., AAPL)',
+          description: 'Stock ticker symbol (e.g., AAPL), or "CASH" for cash funding/withdrawal',
         },
         type: {
           type: 'string',
-          enum: ['BUY', 'SELL', 'DIVIDEND'],
-          description: 'Type of transaction',
+          enum: ['BUY', 'SELL', 'DIVIDEND', 'DEPOSIT', 'WITHDRAWAL'],
+          description:
+            'Type of transaction. DEPOSIT/WITHDRAWAL are for the CASH ticker only (e.g., bank funding)',
         },
         shares: {
           type: 'number',
-          description: 'Number of shares',
+          description: 'Number of shares (or dollar amount for CASH DEPOSIT/WITHDRAWAL)',
         },
         pricePerShare: {
           type: 'number',
-          description: 'Price per share',
+          description: 'Price per share (ignored for CASH DEPOSIT/WITHDRAWAL, treated as 1)',
         },
         date: {
           type: 'string',
@@ -116,7 +122,7 @@ export async function handleTransactionTool(
     case 'add_transaction':
       return Client.addTransaction(
         params.ticker as string,
-        params.type as 'BUY' | 'SELL' | 'DIVIDEND',
+        params.type as 'BUY' | 'SELL' | 'DIVIDEND' | 'DEPOSIT' | 'WITHDRAWAL',
         params.shares as number,
         params.pricePerShare as number,
         params.date as string,

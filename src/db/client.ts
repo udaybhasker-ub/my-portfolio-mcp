@@ -32,37 +32,57 @@ function backfillPositions(): void {
   }
 }
 
+const CASH_TICKER = 'CASH';
+
 export function addTransaction(
   ticker: string,
-  type: 'BUY' | 'SELL' | 'DIVIDEND',
+  type: 'BUY' | 'SELL' | 'DIVIDEND' | 'DEPOSIT' | 'WITHDRAWAL',
   shares: number,
   pricePerShare: number,
   date: string,
-  comments: string
+  comments: string,
+  linkedTxId: string | null = null
 ): Types.Transaction {
   const db = getDb();
   const id = uuidv4();
   const now = new Date().toISOString();
-  const totalCost = shares * pricePerShare;
+  const isCashFlow = type === 'DEPOSIT' || type === 'WITHDRAWAL';
+  const effectivePricePerShare = isCashFlow ? 1 : pricePerShare;
+  const totalCost = shares * effectivePricePerShare;
 
   const stmt = db.prepare(`
-    INSERT INTO transactions (id, ticker, type, shares, pricePerShare, totalCost, date, comments, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO transactions (id, ticker, type, shares, pricePerShare, totalCost, date, comments, linkedTxId, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  stmt.run(id, ticker, type, shares, pricePerShare, totalCost, date, comments, now, now);
+  stmt.run(id, ticker, type, shares, effectivePricePerShare, totalCost, date, comments, linkedTxId, now, now);
 
   rebuildPosition(ticker);
+
+  // Stock buys/sells move cash in/out of the CASH position automatically.
+  if (ticker !== CASH_TICKER && (type === 'BUY' || type === 'SELL')) {
+    const cashType = type === 'BUY' ? 'WITHDRAWAL' : 'DEPOSIT';
+    addTransaction(
+      CASH_TICKER,
+      cashType,
+      totalCost,
+      1,
+      date,
+      `Auto: ${type} ${shares} ${ticker} @ ${effectivePricePerShare}`,
+      id
+    );
+  }
 
   return {
     id,
     ticker,
     type,
     shares,
-    pricePerShare,
+    pricePerShare: effectivePricePerShare,
     totalCost,
     date,
     comments,
+    linkedTxId,
     createdAt: now,
     updatedAt: now,
   };
@@ -138,6 +158,19 @@ export function updateTransaction(
 
   rebuildPosition(updated.ticker);
 
+  // Keep the auto-generated CASH transaction for this BUY/SELL in sync.
+  const linkedCashTx = db.prepare('SELECT * FROM transactions WHERE linkedTxId = ?').get(id) as
+    | Types.Transaction
+    | undefined;
+  if (linkedCashTx) {
+    db.prepare(`
+      UPDATE transactions
+      SET shares = ?, pricePerShare = 1, totalCost = ?, date = ?, updatedAt = ?
+      WHERE id = ?
+    `).run(updated.totalCost, updated.totalCost, updated.date, updated.updatedAt, linkedCashTx.id);
+    rebuildPosition(CASH_TICKER);
+  }
+
   return updated;
 }
 
@@ -154,6 +187,16 @@ export function deleteTransaction(id: string): { ticker: string } | null {
   }
 
   rebuildPosition(existing.ticker);
+
+  // Remove the auto-generated CASH transaction linked to this one, if any.
+  const linkedCashTx = db.prepare('SELECT id FROM transactions WHERE linkedTxId = ?').get(id) as
+    | { id: string }
+    | undefined;
+  if (linkedCashTx) {
+    db.prepare('DELETE FROM transactions WHERE id = ?').run(linkedCashTx.id);
+    rebuildPosition(CASH_TICKER);
+  }
+
   return { ticker: existing.ticker };
 }
 
