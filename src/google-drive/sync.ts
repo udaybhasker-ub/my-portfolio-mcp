@@ -1,5 +1,6 @@
 import { getDriveClient } from './auth.js';
 import { config_ } from '../config.js';
+import { checkpointDatabase } from '../db/client.js';
 import { createReadStream, createWriteStream, existsSync, statSync } from 'fs';
 import { resolve } from 'path';
 import { promisify } from 'util';
@@ -18,6 +19,9 @@ export async function uploadDatabaseToDrive(): Promise<void> {
       console.log('Database file does not exist, skipping upload');
       return;
     }
+
+    // Flush the WAL into the main file so the uploaded copy is complete.
+    checkpointDatabase();
 
     const files = await drive.files.list({
       q: `'${config_.driveFolderId}' in parents and name='${DB_FILE_NAME}' and trashed=false`,

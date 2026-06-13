@@ -1,5 +1,6 @@
 import { getDriveClient } from './auth.js';
 import { config_ } from '../config.js';
+import { checkpointDatabase } from '../db/client.js';
 import { createReadStream, existsSync } from 'fs';
 import { resolve } from 'path';
 import cron from 'node-cron';
@@ -51,6 +52,9 @@ export async function createDailyBackup(): Promise<void> {
       console.log('Database file does not exist, skipping backup');
       return;
     }
+
+    // Flush the WAL into the main file so the uploaded copy is complete.
+    checkpointDatabase();
 
     const drive = await getDriveClient();
     const backupsFolderIdValue = await getBackupsFolderId();

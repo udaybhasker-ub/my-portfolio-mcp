@@ -24,6 +24,16 @@ export function getDb(): Database.Database {
   return dbInstance;
 }
 
+// In WAL mode, recent writes live in the -wal file, not the main database
+// file. Anything that copies/uploads the main file alone (e.g. Drive sync)
+// must call this first or it will capture an empty/stale database.
+export function checkpointDatabase(): void {
+  if (!dbInstance) {
+    return;
+  }
+  dbInstance.pragma('wal_checkpoint(TRUNCATE)');
+}
+
 function backfillPositions(): void {
   const db = getDb();
   const tickers = db.prepare('SELECT DISTINCT ticker FROM transactions').all() as { ticker: string }[];
