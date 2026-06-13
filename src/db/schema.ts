@@ -33,12 +33,13 @@ export function initializeSchema(db: Database.Database): { needsPositionBackfill
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
       ticker TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('BUY', 'SELL', 'DIVIDEND')),
+      type TEXT NOT NULL CHECK(type IN ('BUY', 'SELL', 'DIVIDEND', 'DEPOSIT', 'WITHDRAWAL')),
       shares REAL NOT NULL,
       pricePerShare REAL NOT NULL,
       totalCost REAL NOT NULL,
       date TEXT NOT NULL,
       comments TEXT,
+      linkedTxId TEXT,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     )
@@ -117,6 +118,37 @@ export function initializeSchema(db: Database.Database): { needsPositionBackfill
   } else {
     db.exec(POSITIONS_TABLE);
     db.exec(POSITION_COMMENTS_TABLE);
+  }
+
+  if (currentVersion < 3) {
+    // Add DEPOSIT/WITHDRAWAL transaction types (for cash funding/spending) and
+    // a linkedTxId column (links an auto-generated cash transaction back to the
+    // stock BUY/SELL that produced it). SQLite CHECK constraints require a table rebuild.
+    db.exec(`
+      CREATE TABLE transactions_new (
+        id TEXT PRIMARY KEY,
+        ticker TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('BUY', 'SELL', 'DIVIDEND', 'DEPOSIT', 'WITHDRAWAL')),
+        shares REAL NOT NULL,
+        pricePerShare REAL NOT NULL,
+        totalCost REAL NOT NULL,
+        date TEXT NOT NULL,
+        comments TEXT,
+        linkedTxId TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      )
+    `);
+    db.exec(`
+      INSERT INTO transactions_new (id, ticker, type, shares, pricePerShare, totalCost, date, comments, linkedTxId, createdAt, updatedAt)
+      SELECT id, ticker, type, shares, pricePerShare, totalCost, date, comments, NULL, createdAt, updatedAt FROM transactions
+    `);
+    db.exec('DROP TABLE transactions');
+    db.exec('ALTER TABLE transactions_new RENAME TO transactions');
+    db.prepare('INSERT INTO schemaVersion (version, appliedAt) VALUES (?, ?)').run(
+      3,
+      new Date().toISOString()
+    );
   }
 
   return { needsPositionBackfill };

@@ -1,12 +1,13 @@
 export interface Transaction {
   id: string;
   ticker: string;
-  type: 'BUY' | 'SELL' | 'DIVIDEND';
+  type: 'BUY' | 'SELL' | 'DIVIDEND' | 'DEPOSIT' | 'WITHDRAWAL';
   shares: number;
   pricePerShare: number;
   totalCost: number;
   date: string;
   comments: string;
+  linkedTxId: string | null;
   createdAt: string;
   updatedAt: string;
 }
